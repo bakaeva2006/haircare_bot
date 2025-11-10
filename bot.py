@@ -1,24 +1,36 @@
 import os
+from flask import Flask, request
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# Получаем токен из переменных окружения Render
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-# Проверим, что токен найден
 if not BOT_TOKEN:
-    raise ValueError("❌ Не найден BOT_TOKEN. Добавь его в Environment Variables на Render.")
+    raise ValueError("BOT_TOKEN не задан")
 
-# Создаём экземпляр приложения Telegram
-app = ApplicationBuilder().token(BOT_TOKEN).build()
+app = Flask(__name__)
+
+# Создаём Telegram-приложение
+telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
 
 # Обработчик команды /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Привет! Я HairGeniusBot.\nОтправь мне состав или фото этикетки — я помогу его проанализировать.")
+    await update.message.reply_text("👋 Привет! Я HairGeniusBot.\nОтправь мне состав или фото этикетки — я помогу проанализировать его.")
 
-# Добавляем обработчик в приложение
-app.add_handler(CommandHandler("start", start))
+telegram_app.add_handler(CommandHandler("start", start))
 
-# Запуск приложения
+# Роут для приема POST запросов от Telegram (Webhook)
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
+    telegram_app.update_queue.put(update)
+    return "ok"
+
 if __name__ == "__main__":
-    app.run_polling()
+    # Запускаем Flask с webhook
+    PORT = int(os.environ.get("PORT", "8080"))
+    telegram_app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=BOT_TOKEN,
+        webhook_url=f"https://haircare-bot.onrender.com/{BOT_TOKEN}"
+    )
