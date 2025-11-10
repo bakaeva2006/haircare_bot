@@ -5,6 +5,8 @@ import asyncio
 import httpx
 import pandas as pd
 import re
+import nest_asyncio
+from io import BytesIO
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -15,7 +17,7 @@ from telegram.ext import (
     filters,
 )
 
-# Логирование
+# Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -27,20 +29,21 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не задан")
 
-# Ссылка на raw Excel файл с GitHub
+# Прямая ссылка на raw Excel файл на GitHub (без редиректов)
 EXCEL_URL = "https://raw.githubusercontent.com/bakaeva2006/haircare_bot/main/data/ingredients.xlsx"
 
 # Разрешённые пользователи
 ALLOWED_USERS = {977069285}
 
-# Загрузка Excel
+# Загрузка Excel с опорными точками
 def load_reference_points():
     logger.info("Скачиваем Excel с GitHub...")
     try:
         with httpx.Client() as client:
             response = client.get(EXCEL_URL)
             response.raise_for_status()
-            df = pd.read_excel(response.content, sheet_name="Опорные_точки")
+            excel_bytes = BytesIO(response.content)
+            df = pd.read_excel(excel_bytes, sheet_name="Опорные_точки")
         logger.info("Excel загружен успешно")
         return df
     except Exception as e:
@@ -49,7 +52,7 @@ def load_reference_points():
 
 df_points = load_reference_points()
 
-# Создаем словарь опорных точек
+# Формируем словарь для поиска опорных точек
 points_dict = {}
 if df_points is not None:
     for _, row in df_points.iterrows():
@@ -63,6 +66,7 @@ if df_points is not None:
 STATE_WAITING_FOR_COMPOSITION = "waiting_for_composition"
 STATE_IDLE = "idle"
 
+# Хранилище состояний пользователей
 user_states = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -146,24 +150,12 @@ async def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     application.add_handler(MessageHandler(filters.COMMAND, unknown_handler))
 
-    logger.info("Запуск бота (webhook)...")
-
-    PORT = int(os.getenv("PORT", "8443"))
-    WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{BOT_TOKEN}"
-
-    await application.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        webhook_url=WEBHOOK_URL,
-    )
+    logger.info("Запуск бота...")
+    await application.run_polling()
 
 if __name__ == "__main__":
     if sys.platform == "win32":
-        import asyncio
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-    import nest_asyncio
     nest_asyncio.apply()
-
-    import asyncio
     asyncio.run(main())
