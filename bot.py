@@ -12,9 +12,17 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не задан")
 
+# Список разрешённых пользователей (user_id)
+ALLOWED_USERS = {
+    977069285, 
+}
+
+def user_allowed(update: Update) -> bool:
+    return update.effective_user.id in ALLOWED_USERS
+
 app = Flask(__name__)
 
-EXCEL_URL = "https://raw.githubusercontent.com/bakaeva2006/haircare_bot/main/data/ingredients.xlsx"
+EXCEL_URL = "https://github.com/bakaeva2006/haircare_bot/raw/refs/heads/main/data/ingredients.xlsx"
 df_points = pd.read_excel(EXCEL_URL, sheet_name="Опорные_точки")
 search_words = df_points['english_name'].dropna().tolist() + df_points['russian_name'].dropna().tolist()
 
@@ -34,6 +42,10 @@ def highlight_first_anchor(text: str) -> str:
 MENU, ANALYZE = range(2)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not user_allowed(update):
+        await update.message.reply_text("Извините, у вас нет доступа к этому боту.")
+        return ConversationHandler.END
+
     keyboard = [["Проанализировать состав"]]
     reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     await update.message.reply_text(
@@ -43,6 +55,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return MENU
 
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not user_allowed(update):
+        await update.message.reply_text("Извините, у вас нет доступа к этому боту.")
+        return ConversationHandler.END
+
     text = update.message.text
     if text == "Проанализировать состав":
         await update.message.reply_text(
@@ -55,10 +71,14 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return MENU
 
 async def analyze_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not user_allowed(update):
+        await update.message.reply_text("Извините, у вас нет доступа к этому боту.")
+        return ConversationHandler.END
+
     user_text = update.message.text
     highlighted = highlight_first_anchor(user_text)
     await update.message.reply_text(highlighted, parse_mode="Markdown")
-    # После анализа предлагаем вернуться в меню
+
     keyboard = [["Проанализировать состав"]]
     reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     await update.message.reply_text(
