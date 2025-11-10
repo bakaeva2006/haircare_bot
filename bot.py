@@ -1,142 +1,169 @@
 import os
-import re
+import logging
+import sys
+import asyncio
+import httpx
 import pandas as pd
-from flask import Flask, request
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
+import re
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, ContextTypes,
-    MessageHandler, filters, ConversationHandler
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters,
 )
 
+# Логирование
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# Токен бота из переменной окружения
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не задан")
 
-# Разрешённые user_id (замени на свой)
-ALLOWED_USERS = {
-    977069285,
-}
+# Ссылка на raw Excel файл с GitHub
+EXCEL_URL = "https://raw.githubusercontent.com/bakaeva2006/haircare_bot/main/data/ingredients.xlsx"
 
-def user_allowed(update: Update) -> bool:
-    return update.effective_user.id in ALLOWED_USERS
+# Разрешённые пользователи
+ALLOWED_USERS = {977069285}
 
-app = Flask(__name__)
+# Загрузка Excel
+def load_reference_points():
+    logger.info("Скачиваем Excel с GitHub...")
+    try:
+        with httpx.Client() as client:
+            response = client.get(EXCEL_URL)
+            response.raise_for_status()
+            df = pd.read_excel(response.content, sheet_name="Опорные_точки")
+        logger.info("Excel загружен успешно")
+        return df
+    except Exception as e:
+        logger.error(f"Ошибка загрузки Excel: {e}")
+        return None
 
-EXCEL_URL = "https://github.com/bakaeva2006/haircare_bot/raw/refs/heads/main/data/ingredients.xlsx"
-df_points = pd.read_excel(EXCEL_URL, sheet_name="Опорные_точки")
-search_words = df_points['english_name'].dropna().tolist() + df_points['russian_name'].dropna().tolist()
+df_points = load_reference_points()
 
-def highlight_first_anchor(text: str) -> str:
-    text_lower = text.lower()
-    for word in search_words:
-        word_lower = word.lower().strip()
-        pattern = r'\b' + re.escape(word_lower) + r'\b'
-        match = re.search(pattern, text_lower)
-        if match:
-            start, end = match.start(), match.end()
-            highlighted = f"**{text[start:end]}**"
-            result = text[:start] + highlighted + text[end:]
-            return result
-    return text
+# Создаем словарь опорных точек
+points_dict = {}
+if df_points is not None:
+    for _, row in df_points.iterrows():
+        eng = str(row['english_name']).strip()
+        rus = str(row['russian_name']).strip()
+        desc = str(row['description']).strip()
+        points_dict[eng.lower()] = {"russian_name": rus, "description": desc}
+        points_dict[rus.lower()] = {"russian_name": rus, "description": desc}
 
-MENU, ANALYZE = range(2)
+# FSM состояния
+STATE_WAITING_FOR_COMPOSITION = "waiting_for_composition"
+STATE_IDLE = "idle"
 
-def get_main_keyboard():
-    keyboard = [
-        [KeyboardButton("/start"), KeyboardButton("/reset")],
-        [KeyboardButton("Проанализировать состав")]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+user_states = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not user_allowed(update):
-        await update.message.reply_text("Извините, у вас нет доступа к этому боту.")
-        return ConversationHandler.END
+    user_id = update.effective_user.id
+    if user_id not in ALLOWED_USERS:
+        await update.message.reply_text("Извините, доступ к боту закрыт.")
+        return
 
-    await update.message.reply_text(
-        "👋 Привет! Выбери действие:",
-        reply_markup=get_main_keyboard()
-    )
-    return MENU
-
-async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not user_allowed(update):
-        await update.message.reply_text("Извините, у вас нет доступа к этому боту.")
-        return ConversationHandler.END
-
-    text = update.message.text
-    if text == "Проанализировать состав":
-        await update.message.reply_text(
-            "Отправь мне текст состава средства.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        return ANALYZE
-    elif text == "/reset":
-        await update.message.reply_text(
-            "Состояние сброшено. Напишите /start для начала.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        return ConversationHandler.END
-    elif text == "/start":
-        return await start(update, context)
-    else:
-        await update.message.reply_text("Пожалуйста, выбери опцию из меню.")
-        return MENU
-
-async def analyze_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not user_allowed(update):
-        await update.message.reply_text("Извините, у вас нет доступа к этому боту.")
-        return ConversationHandler.END
-
-    user_text = update.message.text
-    highlighted = highlight_first_anchor(user_text)
-    await update.message.reply_text(highlighted, parse_mode="Markdown")
-
-    await update.message.reply_text(
-        "Что хочешь сделать дальше?",
-        reply_markup=get_main_keyboard()
-    )
-    return MENU
-
-async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not user_allowed(update):
-        await update.message.reply_text("Извините, у вас нет доступа к этому боту.")
-        return ConversationHandler.END
-
-    await update.message.reply_text(
-        "Состояние сброшено. Напишите /start для начала.",
-        reply_markup=ReplyKeyboardRemove()
-    )
-    return ConversationHandler.END
-
-telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-conv_handler = ConversationHandler(
-    entry_points=[CommandHandler('start', start)],
-    states={
-        MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler)],
-        ANALYZE: [MessageHandler(filters.TEXT & ~filters.COMMAND, analyze_handler)],
-    },
-    fallbacks=[
-        CommandHandler('start', start),
-        CommandHandler('reset', reset)
+    user_states[user_id] = STATE_IDLE
+    keyboard = [
+        [InlineKeyboardButton("Проанализировать состав", callback_data="analyze")],
+        [InlineKeyboardButton("Сбросить", callback_data="reset")],
     ]
-)
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
-telegram_app.add_handler(conv_handler)
-telegram_app.add_handler(CommandHandler('reset', reset))
+    await update.message.reply_text(
+        "👋 Привет! Я HairGeniusBot.\nВыбери действие:",
+        reply_markup=reply_markup,
+    )
 
-@app.route(f"/{BOT_TOKEN}", methods=["POST"])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-    telegram_app.update_queue.put(update)
-    return "ok"
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    await query.answer()
 
-if __name__ == "__main__":
-    PORT = int(os.environ.get("PORT", "8080"))
-    telegram_app.run_webhook(
+    if user_id not in ALLOWED_USERS:
+        await query.edit_message_text("Извините, доступ к боту закрыт.")
+        return
+
+    if query.data == "analyze":
+        user_states[user_id] = STATE_WAITING_FOR_COMPOSITION
+        await query.edit_message_text("Пожалуйста, пришлите текст состава средства.")
+    elif query.data == "reset":
+        user_states[user_id] = STATE_IDLE
+        await query.edit_message_text("Состояние сброшено. Выберите действие командой /start")
+
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ALLOWED_USERS:
+        await update.message.reply_text("Извините, доступ к боту закрыт.")
+        return
+
+    state = user_states.get(user_id, STATE_IDLE)
+    if state != STATE_WAITING_FOR_COMPOSITION:
+        await update.message.reply_text("Пожалуйста, выберите действие командой /start")
+        return
+
+    composition_text = update.message.text.lower()
+
+    first_found = None
+    first_pos = len(composition_text) + 1
+    for key in points_dict.keys():
+        pos = composition_text.find(key)
+        if pos != -1 and pos < first_pos:
+            first_pos = pos
+            first_found = key
+
+    if first_found:
+        point_info = points_dict[first_found]
+        highlighted = f"*{point_info['russian_name']}*"
+        pattern = re.compile(re.escape(first_found), re.IGNORECASE)
+        result_text = pattern.sub(highlighted, update.message.text, count=1)
+
+        await update.message.reply_text(
+            f"Опорная точка:\n{result_text}\n\nОписание: {point_info['description']}",
+            parse_mode="Markdown"
+        )
+    else:
+        await update.message.reply_text("Опорные точки в составе не найдены.")
+
+    user_states[user_id] = STATE_IDLE
+
+async def unknown_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Неизвестная команда. Пожалуйста, используйте /start.")
+
+async def main():
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    application.add_handler(MessageHandler(filters.COMMAND, unknown_handler))
+
+    logger.info("Запуск бота (webhook)...")
+
+    PORT = int(os.getenv("PORT", "8443"))
+    WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{BOT_TOKEN}"
+
+    await application.run_webhook(
         listen="0.0.0.0",
         port=PORT,
-        url_path=BOT_TOKEN,
-        webhook_url=f"https://haircare-bot.onrender.com/{BOT_TOKEN}"
+        webhook_url=WEBHOOK_URL,
     )
+
+if __name__ == "__main__":
+    if sys.platform == "win32":
+        import asyncio
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+    import nest_asyncio
+    nest_asyncio.apply()
+
+    import asyncio
+    asyncio.run(main())

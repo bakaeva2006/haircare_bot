@@ -5,3 +5,5 @@ pytesseract
 Pillow
 opencv-python
 flask
+requests
+nest_asyncio
