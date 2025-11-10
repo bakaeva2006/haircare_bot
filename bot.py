@@ -2,7 +2,7 @@ import os
 import re
 import pandas as pd
 from flask import Flask, request
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes,
     MessageHandler, filters, ConversationHandler
@@ -12,9 +12,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не задан")
 
-# Список разрешённых пользователей (user_id)
+# Разрешённые user_id (замени на свой)
 ALLOWED_USERS = {
-    977069285, 
+    977069285,
 }
 
 def user_allowed(update: Update) -> bool:
@@ -41,16 +41,21 @@ def highlight_first_anchor(text: str) -> str:
 
 MENU, ANALYZE = range(2)
 
+def get_main_keyboard():
+    keyboard = [
+        [KeyboardButton("/start"), KeyboardButton("/reset")],
+        [KeyboardButton("Проанализировать состав")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_allowed(update):
         await update.message.reply_text("Извините, у вас нет доступа к этому боту.")
         return ConversationHandler.END
 
-    keyboard = [["Проанализировать состав"]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     await update.message.reply_text(
         "👋 Привет! Выбери действие:",
-        reply_markup=reply_markup
+        reply_markup=get_main_keyboard()
     )
     return MENU
 
@@ -66,6 +71,14 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=ReplyKeyboardRemove()
         )
         return ANALYZE
+    elif text == "/reset":
+        await update.message.reply_text(
+            "Состояние сброшено. Напишите /start для начала.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+    elif text == "/start":
+        return await start(update, context)
     else:
         await update.message.reply_text("Пожалуйста, выбери опцию из меню.")
         return MENU
@@ -79,13 +92,22 @@ async def analyze_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     highlighted = highlight_first_anchor(user_text)
     await update.message.reply_text(highlighted, parse_mode="Markdown")
 
-    keyboard = [["Проанализировать состав"]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     await update.message.reply_text(
         "Что хочешь сделать дальше?",
-        reply_markup=reply_markup
+        reply_markup=get_main_keyboard()
     )
     return MENU
+
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not user_allowed(update):
+        await update.message.reply_text("Извините, у вас нет доступа к этому боту.")
+        return ConversationHandler.END
+
+    await update.message.reply_text(
+        "Состояние сброшено. Напишите /start для начала.",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return ConversationHandler.END
 
 telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -93,12 +115,16 @@ conv_handler = ConversationHandler(
     entry_points=[CommandHandler('start', start)],
     states={
         MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler)],
-        ANALYZE: [MessageHandler(filters.TEXT & ~filters.COMMAND, analyze_handler)]
+        ANALYZE: [MessageHandler(filters.TEXT & ~filters.COMMAND, analyze_handler)],
     },
-    fallbacks=[CommandHandler('start', start)]
+    fallbacks=[
+        CommandHandler('start', start),
+        CommandHandler('reset', reset)
+    ]
 )
 
 telegram_app.add_handler(conv_handler)
+telegram_app.add_handler(CommandHandler('reset', reset))
 
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
