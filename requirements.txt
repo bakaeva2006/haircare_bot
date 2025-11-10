@@ -1,0 +1,7 @@
+python-telegram-bot==21.0
+pandas
+openpyxl
+pytesseract
+Pillow
+opencv-python
+flask
